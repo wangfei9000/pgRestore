@@ -43,6 +43,7 @@ typedef uint32  TransactionId;
 #define MAXALIGN(LEN)   (((uintptr_t)(LEN) + 7) & ~((uintptr_t)7))
 
 #define PG_VERSION_FILE "PG_VERSION"
+#define OPEN_DEBUG_LOG 1  // 1 关闭，0 打开
 
 /* ================================================================
  * 页面层结构体 (摘自 storage/ 下的头文件)
@@ -663,7 +664,7 @@ find_database_oid(const char *datadir, const char *dbname)
  * 列出指定数据库中的所有表 (从 pg_class)
  */
 static void
-list_tables(const char *datadir, Oid dboid, int verbose)
+list_tables(const char *datadir, Oid dboid, int verbose, int table_only)
 {
     char subdir[32];
     snprintf(subdir, sizeof(subdir), "base/%u", dboid);
@@ -717,7 +718,6 @@ list_tables(const char *datadir, Oid dboid, int verbose)
             int   got_name = 0;
 
             int ncols = (Natts_pg_class < tup_natts) ? Natts_pg_class : tup_natts;
-
             for (int attnum = 0; attnum < ncols; attnum++)
             {
                 if (has_nulls && att_isnull(attnum, null_bits))
@@ -776,10 +776,11 @@ list_tables(const char *datadir, Oid dboid, int verbose)
                 snprintf(size_info, sizeof(size_info), "%d页/%.0f行", relpages, reltuples);
             else
                 snprintf(size_info, sizeof(size_info), "%d页", relpages);
-
-            printf("%-4d %-34s %-6u %-8s %-5d %s\n",
-                   total, relname, reloid, kind_desc, relnatts, size_info);
-
+            if ((table_only == 1 && relkind == 'r') || table_only == 0) {
+                printf("%-4d %-34s %-6u %-8s %-5d %s\n",
+                    total, relname, reloid, kind_desc, relnatts, size_info);
+            }
+            
             if (verbose && relpages > 0) {
                 printf("      [详情] relpages=%d reltuples=%.0f relnatts=%d\n",
                        relpages, reltuples, relnatts);
@@ -1020,11 +1021,13 @@ read_columns(const char *datadir, Oid dboid, Oid reloid,
             /* dump 前 1 个匹配的 pg_attribute tuple */
             static int rcdump = 0;
             if (rcdump < 1 && a_attrelid == reloid) {
-                /*fprintf(stderr, "[read_columns] 1st match: a_attnum=%d t_hoff=%d\n",
+                if(OPEN_DEBUG_LOG == 0){
+                    fprintf(stderr, "[read_columns] 1st match: a_attnum=%d t_hoff=%d\n",
                         a_attnum, tup->t_hoff);
-                fprintf(stderr, "[read_columns] tp+00..+5f: ");
-                for (int k=0;k<96;k++) fprintf(stderr, "%02x%s", (uint8)tp[k], (k%16==15)?"\n        ":" ");
-                fprintf(stderr, "\n");*/
+                    fprintf(stderr, "[read_columns] tp+00..+5f: ");
+                    for (int k=0;k<96;k++) fprintf(stderr, "%02x%s", (uint8)tp[k], (k%16==15)?"\n        ":" ");
+                    fprintf(stderr, "\n");
+                }
                 rcdump++;
             }
 
@@ -1524,8 +1527,8 @@ read_table_rows(const char *datadir, Oid dboid, Oid relfilenode, char relkind,
 
             total_rows++;
 
-            /* 第一行数据: 打印每列的偏移和原始字节 
-            if (total_rows == 1) {
+            /* 第一行数据: 打印每列的偏移和原始字节  */
+            if (OPEN_DEBUG_LOG == 0 && total_rows == 1) {
                 fprintf(stderr, "[DEBUG] row 1: tup_natts=%d has_nulls=%d t_hoff=%d\n",
                         tup_natts, has_nulls, tup->t_hoff);
                 if (has_nulls) {
@@ -1534,7 +1537,7 @@ read_table_rows(const char *datadir, Oid dboid, Oid relfilenode, char relkind,
                     for (int k = 0; k < nb && k < 8; k++) fprintf(stderr, "%02x ", null_bits[k]);
                     fprintf(stderr, "\n");
                 }
-                // dump tp+0 到 tp+79 
+                /* dump tp+0 到 tp+79  */ 
                 fprintf(stderr, "[DEBUG] tp+30..+6f: ");
                 for (int k=48;k<112;k++) fprintf(stderr, "%02x%s", (uint8)tp[k], (k%16==15)?"\n        ":" ");
                 fprintf(stderr, "\n");
@@ -1566,7 +1569,7 @@ read_table_rows(const char *datadir, Oid dboid, Oid relfilenode, char relkind,
                             (uint8)dbg_data[6], (uint8)dbg_data[7]);
                     dbg_off = att_addlength(dbg_off, cols[dc].attlen, dbg_data);
                 }
-            }*/
+            }
 
             if (sql_mode) {
                 /* --- SQL INSERT 模式 --- */
@@ -1705,6 +1708,7 @@ main(int argc, char *argv[])
     const char *tabname = NULL;
     int verbose = 0;
     int sql_mode = 0;
+    int table_only = 0;
 
     for (int i = 1; i < argc; i++) {
         if (strcmp(argv[i], "--help") == 0 || strcmp(argv[i], "-h") == 0) {
@@ -1714,6 +1718,8 @@ main(int argc, char *argv[])
             verbose = 1;
         } else if (strcmp(argv[i], "-sql") == 0 || strcmp(argv[i], "--sql") == 0) {
             sql_mode = 1;
+        } else if (strcmp(argv[i], "-table") == 0 || strcmp(argv[i], "--table") == 0) {
+            table_only = 1;
         } else if (!datadir) {
             datadir = argv[i];
         } else if (!dbname) {
@@ -1793,7 +1799,7 @@ main(int argc, char *argv[])
             return 1;
         }
         printf("=== 数据库 '%s' (OID=%u) 中的对象 ===\n\n", dbname, dboid);
-        list_tables(datadir, dboid, verbose);
+        list_tables(datadir, dboid, verbose,table_only);
         return 0;
     }
 
